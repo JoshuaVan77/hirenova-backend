@@ -16,21 +16,29 @@ const io = initSocket(server);
 // Middleware
 // ==========================================
 
-// ✅ FIXED: Allow multiple localhost ports for development
+// ✅ FIXED: Allow multiple origins (Localhost + Both Vercel Deployments)
+// Railway .env မှာ FRONTEND_URL=https://hirenova-user.vercel.app,https://hirenova-admin.vercel.app လို့ ထားနိုင်အောင် ပြင်ဆင်ထားသည်
+const envOrigins = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : [];
+
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
   'http://localhost:5174',
-  process.env.FRONTEND_URL // .env file ကနေ လာရင်လည်း allow လုပ်မယ်
-].filter(Boolean); // undefined/null တန်ဖိုးတွေကို ဖယ်ရှားမယ်
+  'https://hirenova-user.vercel.app',      // User Website Live URL
+  'https://hirenova-admin.vercel.app',     // Admin Dashboard Live URL
+  ...envOrigins                             // .env file ကနေ လာတဲ့ URL တွေကို ထပ်ဖြည့်မယ်
+]
+  .filter(Boolean)                          // undefined/null တန်ဖိုးတွေကို ဖယ်ရှားမယ်
+  .map(origin => origin.trim());            // URL ရှေ့နောက်မှာ ပါနေတဲ့ Space တွေကို ဖျက်မယ်
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or Postman)
+    // Allow requests with no origin (like mobile apps, Postman, or Railway internal DB)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+      console.warn('⚠️ CORS Blocked:', msg);
       return callback(new Error(msg), false);
     }
     return callback(null, true);
