@@ -1,49 +1,91 @@
 const express = require('express');
 const router = express.Router();
-const chatController = require('../controllers/chatController');
 const jwt = require('jsonwebtoken');
 const upload = require('../config/upload');
+const chatController = require('../controllers/chatController');
 
-// User Token Verify
+// ✅ Import the centralized, secure adminAuth middleware
+const adminAuth = require('../middleware/auth');
+
+// ==========================================
+// User Token Verification Middleware
+// ==========================================
 const verifyUserToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ message: 'No token provided' });
+  const authHeader = req.headers.authorization;
+  
+  // 1. Check if header exists and starts with 'Bearer '
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'Access denied. No token provided or invalid format.' });
+  }
+  
+  const token = authHeader.split(' ')[1];
+  
   try {
+    // 2. Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.userId;
+    req.userId = decoded.userId; 
     next();
   } catch (error) {
-    res.status(401).json({ message: 'Invalid token' });
+    // 3. Log error for server-side debugging
+    console.error('❌ User Token Verification Failed:', error.name, error.message);
+    
+    // 4. Send specific, user-friendly error messages
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: 'Token has expired. Please log in again.' });
+    }
+    
+    return res.status(401).json({ message: 'Invalid or expired token.' });
   }
 };
 
-// Admin Token Verify
-const verifyAdminToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) {
-    req.adminId = 1; // Default admin fallback
-    return next();
-  }
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.adminId = decoded.adminId;
-    next();
-  } catch (error) {
-    req.adminId = 1; // Fallback on error
-    next();
-  }
-};
+// ==========================================
+// User Chat Routes (Protected)
+// ==========================================
 
-// User Routes
+/**
+ * @route   GET /api/chat/messages
+ * @desc    Get user's chat messages
+ * @access  Private (User)
+ */
 router.get('/messages', verifyUserToken, chatController.getUserMessages);
+
+/**
+ * @route   POST /api/chat/send
+ * @desc    Send a message (text or image) from user
+ * @access  Private (User)
+ */
 router.post('/send', verifyUserToken, upload.single('image'), chatController.sendMessage);
 
-// Admin Routes
-router.get('/conversations', verifyAdminToken, chatController.getConversations);
-router.get('/messages/:userId', verifyAdminToken, chatController.getUserChatMessages);
-router.post('/reply', verifyAdminToken, chatController.sendAdminReply);
+// ==========================================
+// Admin Chat Routes (Protected)
+// ==========================================
 
-// ✅ NEW: Mark messages as read (Admin က conversation ကို ဖွင့်ကြည့်တဲ့အခါ ခေါ်မယ်)
-router.post('/mark-read', verifyAdminToken, chatController.markMessagesAsRead);
+/**
+ * @route   GET /api/chat/conversations
+ * @desc    Get all user conversations for admin dashboard
+ * @access  Private (Admin)
+ */
+router.get('/conversations', adminAuth, chatController.getConversations);
+
+/**
+ * @route   GET /api/chat/messages/:userId
+ * @desc    Get specific user's chat messages (Admin view)
+ * @access  Private (Admin)
+ */
+router.get('/messages/:userId', adminAuth, chatController.getUserChatMessages);
+
+/**
+ * @route   POST /api/chat/reply
+ * @desc    Send a reply from admin to user
+ * @access  Private (Admin)
+ */
+router.post('/reply', adminAuth, chatController.sendAdminReply);
+
+/**
+ * @route   POST /api/chat/mark-read
+ * @desc    Mark user's messages as read when admin opens the chat
+ * @access  Private (Admin)
+ */
+router.post('/mark-read', adminAuth, chatController.markMessagesAsRead);
 
 module.exports = router;
