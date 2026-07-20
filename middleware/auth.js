@@ -1,34 +1,61 @@
 const jwt = require('jsonwebtoken');
 
+// ✅ Production-Ready Admin Authentication Middleware
 const adminAuth = (req, res, next) => {
   try {
-    // Get token from header
-    const authHeader = req.headers.authorization;
+    // 1. Get token from header (Case-insensitive check)
+    const authHeader = req.headers.authorization || req.headers.Authorization;
     
-    if (!authHeader) {
-      console.log('❌ No authorization header');
-      return res.status(401).json({ message: 'No token provided' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.warn('⚠️ Auth attempt without valid Bearer token');
+      return res.status(401).json({ message: 'Access denied. No token provided or invalid format.' });
     }
 
-    const token = authHeader.split(' ')[1]; // Bearer TOKEN
+    // 2. Extract the token
+    const token = authHeader.split(' ')[1];
     
     if (!token) {
-      console.log('❌ No token in header');
-      return res.status(401).json({ message: 'Token not found' });
+      return res.status(401).json({ message: 'Access denied. Token is missing.' });
     }
 
-    // Verify token
+    // 3. Ensure JWT_SECRET exists in environment
+    if (!process.env.JWT_SECRET) {
+      console.error('❌ CRITICAL: JWT_SECRET is not defined in environment variables!');
+      return res.status(500).json({ message: 'Server configuration error.' });
+    }
+
+    // 4. Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // ✅ Set admin info in request
-    req.user = decoded;
-    req.adminId = decoded.adminId;
+    // 5. ✅ CRITICAL: Role Verification (Admin only)
+    // သင့် JWT payload ထဲမှာ 'role' ဆိုတဲ့ field ရှိမရှိ စစ်ဆေးသည်
+    if (decoded.role !== 'admin' && decoded.role !== 'super_admin') {
+      console.warn(`⚠️ Unauthorized access attempt by user ID: ${decoded.id || decoded.adminId}`);
+      return res.status(403).json({ message: 'Access denied. Admin privileges required.' });
+    }
     
-    console.log('✅ Admin authenticated:', decoded);
+    // 6. Set user info in request for downstream controllers
+    req.user = decoded;
+    req.adminId = decoded.id || decoded.adminId; // 'id' သို့မဟုတ် 'adminId' နှစ်ခုလုံးကို Support လုပ်သည်
+    
+    // Success - proceed to next middleware or route handler
     next();
+    
   } catch (error) {
-    console.error('❌ Auth middleware error:', error.message);
-    return res.status(401).json({ message: 'Invalid or expired token' });
+    // Log full error for server-side debugging (Railway Logs)
+    console.error('❌ Admin Auth Middleware Error:', error.message);
+    
+    // Provide specific, user-friendly error messages
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: 'Token has expired. Please log in again.' });
+    }
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ message: 'Invalid token format.' });
+    }
+
+    // Generic fallback for other JWT errors
+    return res.status(401).json({ message: 'Invalid or expired token.' });
   }
 };
 
