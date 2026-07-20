@@ -2,7 +2,9 @@ const { pool } = require('../config/database');
 
 console.log('✅✅✅ userTaskController.js LOADED SUCCESSFULLY! ✅✅✅');
 
+// ==========================================
 // ၁။ Get Today's Tasks for User
+// ==========================================
 exports.getTodayTasks = async (req, res) => {
   try {
     const userId = req.userId;
@@ -18,8 +20,9 @@ exports.getTodayTasks = async (req, res) => {
     );
     const completed = completedCountResult[0] ? completedCountResult[0].count : 0;
 
+    // Note: ORDER BY RAND() is acceptable for small tables. 
     const [tasksResult] = await pool.query(
-      'SELECT * FROM tasks WHERE is_active = 1 ORDER BY RAND() LIMIT 100'
+      'SELECT id as task_id, hotel_name, hotel_image, description, order_amount, commission FROM tasks WHERE is_active = 1 ORDER BY RAND() LIMIT 100'
     );
     
     const tasks = Array.isArray(tasksResult) ? tasksResult : [];
@@ -32,14 +35,17 @@ exports.getTodayTasks = async (req, res) => {
   } catch (error) {
     console.error('❌ Get Today Tasks Error:', error);
     res.status(500).json({ 
-      message: 'Server error: ' + error.message,
+      message: 'Server error',
       details: error.sqlMessage || error.message 
     });
   }
 };
 
-// ၂။ Submit Completed Task (✅ FIXED: Handles Lucky Order Deduction & Commission Addition)
+// ==========================================
+// ၂။ Submit Completed Task (✅ FIXED: Handles Lucky Order Deduction & Commission Addition with Transactions)
+// ==========================================
 exports.submitTask = async (req, res) => {
+  const connection = await pool.getConnection();
   try {
     const userId = req.userId;
     if (!userId) {
@@ -49,81 +55,104 @@ exports.submitTask = async (req, res) => {
     const { task_id, task_number, order_amount, commission, is_lucky_order, lucky_order_amount } = req.body;
     const today = new Date().toISOString().split('T')[0];
 
-    if (!task_id) return res.status(400).json({ message: 'Task ID is required' });
-    if (!task_number || task_number < 1 || task_number > 40) {
-      return res.status(400).json({ message: 'Invalid task number' });
+    if (!task_id || !task_number) {
+      return res.status(400).json({ message: 'Task ID and Task Number are required' });
     }
 
-    const [taskExists] = await pool.query('SELECT id FROM tasks WHERE id = ?', [task_id]);
-    if (!taskExists || taskExists.length === 0) {
-      return res.status(404).json({ message: 'Task not found in database' });
-    }
+    await connection.beginTransaction();
 
-    const [completedCountResult] = await pool.query(
+    // 1. Check if already completed 40 tasks today
+    const [completedCountResult] = await connection.query(
       'SELECT COUNT(*) as count FROM user_tasks WHERE user_id = ? AND date = ? AND status = "completed"',
       [userId, today]
     );
     const currentCompleted = completedCountResult[0] ? completedCountResult[0].count : 0;
 
     if (currentCompleted >= 40) {
+      await connection.rollback();
       return res.status(400).json({ message: 'You have completed all 40 tasks for today.' });
     }
 
-    const [existingTask] = await pool.query(
+    // 2. Check for duplicate task_number today (Race condition protection)
+    const [existingTask] = await connection.query(
       'SELECT id FROM user_tasks WHERE user_id = ? AND task_number = ? AND date = ?',
       [userId, task_number, today]
     );
-
     if (existingTask && existingTask.length > 0) {
+      await connection.rollback();
       return res.status(400).json({ message: 'This task number is already completed for today' });
     }
 
-    const orderNo = `ORD${Date.now()}${Math.floor(Math.random() * 1000)}`;
-    
-    // ✅ ၁။ user_tasks table ထဲကို သိမ်းဆည်းမယ် (Commission ပါပြီးသား)
-    await pool.query(
-      `INSERT INTO user_tasks (user_id, task_id, task_number, order_no, order_amount, commission, is_lucky_order, lucky_order_amount, status, date, completed_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, NOW())`,
-      [userId, task_id, task_number, orderNo, order_amount || 0, commission || 0, is_lucky_order || 0, lucky_order_amount || 0, today]
-    );
+    // 3. Parse values safely
+    const finalCommission = parseFloat(commission || 0);
+    const finalOrderAmount = parseFloat(order_amount || 0);
+    const isLucky = is_lucky_order ? 1 : 0;
+    const luckyAmount = parseFloat(lucky_order_amount || 0);
 
-    // ✅ ၂။ အကယ်၍ Lucky Order ဖြစ်ပါက Required Amount ကို Balance ထဲက နုတ်ယူမယ်
-    if (is_lucky_order && lucky_order_amount > 0) {
-      await pool.query('UPDATE users SET balance = balance - ? WHERE id = ?', [lucky_order_amount, userId]);
+    // 4. Handle Lucky Order Logic
+    if (isLucky && luckyAmount > 0) {
+      // ⚠️ CRITICAL: Check if user has enough balance BEFORE deducting
+      const [userBalanceResult] = await connection.query('SELECT balance FROM users WHERE id = ?', [userId]);
+      if (userBalanceResult.length === 0 || userBalanceResult[0].balance < luckyAmount) {
+        await connection.rollback();
+        return res.status(400).json({ message: 'Insufficient balance to complete this lucky order' });
+      }
+
+      // Deduct balance
+      await connection.query('UPDATE users SET balance = balance - ? WHERE id = ?', [luckyAmount, userId]);
       
-      // Lucky Order status ကို "completed" သို့ ပြောင်းမယ် (ဒါကြောင့် Unfinished tab ကနေ ပျောက်သွားမယ်)
-      await pool.query(
+      // Update lucky order status to completed
+      await connection.query(
         'UPDATE lucky_orders SET status = "completed", completed_at = NOW() WHERE user_id = ? AND task_number = ? AND status IN ("assigned", "pending")',
         [userId, task_number]
       );
     }
 
-    // ✅ ၃။ Commission ကို Balance ထဲသို့ အမြဲထည့်ပေးမယ် (ပုံမှန်ရော၊ Lucky Order ရော)
-    await pool.query('UPDATE users SET balance = balance + ? WHERE id = ?', [commission || 0, userId]);
-
-    const [newCompletedCountResult] = await pool.query(
-      'SELECT COUNT(*) as count FROM user_tasks WHERE user_id = ? AND date = ? AND status = "completed"',
-      [userId, today]
+    // 5. Insert into user_tasks
+    const orderNo = `ORD${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    await connection.query(
+      `INSERT INTO user_tasks (user_id, task_id, task_number, order_no, order_amount, commission, is_lucky_order, lucky_order_amount, status, date, completed_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, NOW())`,
+      [userId, task_id, task_number, orderNo, finalOrderAmount, finalCommission, isLucky, luckyAmount, today]
     );
-    const newCompleted = newCompletedCountResult[0] ? newCompletedCountResult[0].count : 0;
+
+    // 6. Add commission to balance (for both normal and lucky orders)
+    if (finalCommission > 0) {
+      await connection.query('UPDATE users SET balance = balance + ? WHERE id = ?', [finalCommission, userId]);
+    }
+
+    await connection.commit();
+
+    const newCompleted = currentCompleted + 1;
 
     res.status(200).json({
       message: 'Task completed successfully',
-      commission: commission || 0,
+      commission: finalCommission,
       completedCount: newCompleted,
       remainingTasks: 40 - newCompleted
     });
 
   } catch (error) {
-    console.error('❌❌❌ FATAL ERROR IN submitTask ❌❌❌');
+    await connection.rollback();
+    console.error('❌❌❌ FATAL ERROR IN submitTask ❌❌❌', error);
+    
+    // Handle unique constraint violation if it happens despite checks
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ message: 'This task has already been recorded for today.' });
+    }
+
     res.status(500).json({ 
-      message: 'Server error: ' + (error.sqlMessage || error.message),
-      details: error.message
+      message: 'Server error',
+      details: error.sqlMessage || error.message 
     });
+  } finally {
+    connection.release();
   }
 };
 
+// ==========================================
 // ၃။ Check Lucky Order for Current Task
+// ==========================================
 exports.checkLuckyOrder = async (req, res) => {
   try {
     const userId = req.userId;
@@ -136,7 +165,6 @@ exports.checkLuckyOrder = async (req, res) => {
       return res.status(400).json({ message: 'Task number is required' });
     }
 
-    // ✅ 'assigned' (Admin ထည့်စဉ်) သို့မဟုတ် 'pending' (User Confirm လုပ်ပြီးသား) နှစ်ခုလုံးကို စစ်ဆေးမယ်
     const [luckyOrders] = await pool.query(
       `SELECT lo.id, lo.amount, lo.commission, lo.task_number, t.hotel_name, t.hotel_image, t.id as task_id
        FROM lucky_orders lo
@@ -166,13 +194,15 @@ exports.checkLuckyOrder = async (req, res) => {
   } catch (error) {
     console.error('❌ Check Lucky Order Error:', error);
     res.status(500).json({ 
-      message: 'Server error: ' + (error.sqlMessage || error.message),
-      details: error.message 
+      message: 'Server error',
+      details: error.sqlMessage || error.message 
     });
   }
 };
 
-// ၄။ ✅ NEW: Acknowledge Lucky Order (User က Confirm/Top-up နှိပ်တဲ့အခါ ခေါ်မယ်)
+// ==========================================
+// ၄။ Acknowledge Lucky Order (User က Confirm/Top-up နှိပ်တဲ့အခါ ခေါ်မယ်)
+// ==========================================
 exports.acknowledgeLuckyOrder = async (req, res) => {
   try {
     const userId = req.userId;
@@ -182,7 +212,7 @@ exports.acknowledgeLuckyOrder = async (req, res) => {
       return res.status(400).json({ message: 'Task number is required' });
     }
 
-    // Status ကို 'assigned' မှ 'pending' သို့ ပြောင်းမယ် (ဒါမှ Unfinished tab မှာ ပေါ်လာမယ်)
+    // Status ကို 'assigned' မှ 'pending' သို့ ပြောင်းမယ်
     const [result] = await pool.query(
       'UPDATE lucky_orders SET status = "pending" WHERE user_id = ? AND task_number = ? AND status = "assigned"',
       [userId, task_number]
@@ -191,16 +221,20 @@ exports.acknowledgeLuckyOrder = async (req, res) => {
     res.status(200).json({ message: 'Lucky order acknowledged and moved to pending' });
   } catch (error) {
     console.error('❌ Acknowledge Lucky Order Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error',
+      details: error.sqlMessage || error.message 
+    });
   }
 };
 
+// ==========================================
 // ၅။ Get Unfinished Tasks (Pending Lucky Orders) - For Order Page
+// ==========================================
 exports.getUnfinishedTasks = async (req, res) => {
   try {
     const userId = req.userId;
     
-    // ✅ 'pending' ဖြစ်နေတဲ့ Lucky Order တွေကိုပဲ ရွေးထုတ်မယ် (Hotel info ပါယူမယ်)
     const [orders] = await pool.query(
       `SELECT lo.id, lo.task_number, lo.amount as required_amount, lo.commission, lo.status, lo.created_at, t.hotel_name, t.hotel_image
        FROM lucky_orders lo
@@ -213,11 +247,16 @@ exports.getUnfinishedTasks = async (req, res) => {
     res.status(200).json({ tasks: orders || [] });
   } catch (error) {
     console.error('Get Unfinished Tasks Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error',
+      details: error.sqlMessage || error.message 
+    });
   }
 };
 
+// ==========================================
 // ၆။ Get Completed Tasks History - For Order Page
+// ==========================================
 exports.getCompletedTasks = async (req, res) => {
   try {
     const userId = req.userId;
@@ -235,11 +274,16 @@ exports.getCompletedTasks = async (req, res) => {
     res.status(200).json({ tasks: tasks || [] });
   } catch (error) {
     console.error('Get Completed Tasks Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      message: 'Server error',
+      details: error.sqlMessage || error.message 
+    });
   }
 };
 
+// ==========================================
 // ၇။ Get Today's Earnings (Normal + Lucky Commission)
+// ==========================================
 exports.getTodayEarnings = async (req, res) => {
   try {
     const userId = req.userId;
@@ -264,6 +308,9 @@ exports.getTodayEarnings = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Get Today Earnings Error:', error);
-    res.status(500).json({ message: 'Server error', details: error.message });
+    res.status(500).json({ 
+      message: 'Server error', 
+      details: error.sqlMessage || error.message 
+    });
   }
 };
