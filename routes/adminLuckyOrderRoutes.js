@@ -1,50 +1,32 @@
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
 
-// ✅ FIX: adminController.js ကို တိုက်ရိုက် Import လုပ်ပါ 
-// (ဘာလို့လဲဆိုတော့ getLuckyOrders, addLuckyOrder, cancelLuckyOrder တွေက ဒီဖိုင်ထဲမှာ ရှိနေလို့ပါ)
+// ✅ Import centralized secure admin authentication middleware
+// (Token စစ်ဆေးတာ၊ Role စစ်ဆေးတာတွေကို ဒီတစ်နေရာတည်းမှာပဲ စီမံခန့်ခွဲထားပါတယ်)
+const adminAuth = require('../middleware/auth');
+
+// ✅ Import controller containing Lucky Order logic
 const adminController = require('../controllers/adminController');
 
-// ✅ Secure Admin Authentication Middleware
-const verifyAdminToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  
-  // ၁။ Token ပါမပါ စစ်ဆေးခြင်း
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Access denied. No token provided.' });
-  }
+/**
+ * @route   GET /api/admin/lucky-orders
+ * @desc    Get all lucky orders
+ * @access  Private (Admin)
+ */
+router.get('/', adminAuth, adminController.getLuckyOrders);
 
-  const token = authHeader.split(' ')[1];
+/**
+ * @route   POST /api/admin/lucky-orders
+ * @desc    Create a new lucky order
+ * @access  Private (Admin)
+ */
+router.post('/', adminAuth, adminController.addLuckyOrder);
 
-  try {
-    // ၂။ Token မှန်ကန်မှုကို စစ်ဆေးခြင်း
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // ၃။ Token ထဲမှာ adminId ပါမပါ သေချာစစ်ဆေးခြင်း
-    if (!decoded.adminId) {
-      return res.status(403).json({ message: 'Invalid token payload. Admin ID not found.' });
-    }
-
-    // ၄။ Request ထဲကို Admin ID ကို သိမ်းဆည်းခြင်း
-    req.adminId = decoded.adminId;
-    req.user = decoded; // အခြား middleware တွေနဲ့ တစ်ထပ်တည်းဖြစ်အောင် ထည့်သွင်းထားခြင်း
-    
-    next();
-  } catch (error) {
-    console.error('❌ Token verification failed:', error.message);
-    return res.status(401).json({ message: 'Invalid or expired token.' });
-  }
-};
-
-// ✅ Apply middleware to all routes
-// GET: Lucky Order စာရင်းကို ဆွဲယူခြင်း
-router.get('/', verifyAdminToken, adminController.getLuckyOrders);
-
-// POST: Lucky Order အသစ်ထည့်သွင်းခြင်း
-router.post('/', verifyAdminToken, adminController.addLuckyOrder);
-
-// PUT: Lucky Order ကို Cancel လုပ်ခြင်း
-router.put('/:id/cancel', verifyAdminToken, adminController.cancelLuckyOrder);
+/**
+ * @route   PUT /api/admin/lucky-orders/:id/cancel
+ * @desc    Cancel a specific lucky order
+ * @access  Private (Admin)
+ */
+router.put('/:id/cancel', adminAuth, adminController.cancelLuckyOrder);
 
 module.exports = router;
