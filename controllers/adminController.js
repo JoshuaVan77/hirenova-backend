@@ -53,52 +53,42 @@ exports.getAllUsers = async (req, res) => {
     res.status(200).json({ users });
   } catch (error) {
     console.error('Get Users Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
 exports.updateUser = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { credit_score, balance, login_password, payment_password, is_banned } = req.body;
+    const userId = parseInt(req.params.id, 10);
+    if (isNaN(userId)) return res.status(400).json({ message: 'Invalid user ID' });
 
+    const { credit_score, balance, login_password, payment_password, is_banned } = req.body;
     let updates = [];
     let values = [];
 
-    if (credit_score !== undefined) {
-      updates.push('credit_score = ?');
-      values.push(credit_score);
+    if (credit_score !== undefined) { updates.push('credit_score = ?'); values.push(credit_score); }
+    if (balance !== undefined) { updates.push('balance = ?'); values.push(balance); }
+    if (is_banned !== undefined) { updates.push('is_banned = ?'); values.push(is_banned); }
+    if (login_password) { 
+      updates.push('password = ?'); 
+      values.push(await bcrypt.hash(login_password, 10)); 
     }
-    if (balance !== undefined) {
-      updates.push('balance = ?');
-      values.push(balance);
-    }
-    if (is_banned !== undefined) {
-      updates.push('is_banned = ?');
-      values.push(is_banned);
-    }
-    if (login_password) {
-      const hashedPassword = await bcrypt.hash(login_password, 10);
-      updates.push('password = ?');
-      values.push(hashedPassword);
-    }
-    if (payment_password) {
-      const hashedPaymentPassword = await bcrypt.hash(payment_password, 10);
-      updates.push('payment_password = ?');
-      values.push(hashedPaymentPassword);
+    if (payment_password) { 
+      updates.push('payment_password = ?'); 
+      values.push(await bcrypt.hash(payment_password, 10)); 
     }
 
     if (updates.length === 0) {
       return res.status(400).json({ message: 'No updates provided' });
     }
 
-    values.push(id);
+    values.push(userId);
     await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, values);
 
     res.status(200).json({ message: 'User updated successfully' });
   } catch (error) {
     console.error('Update User Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -111,52 +101,51 @@ exports.getTopupRequests = async (req, res) => {
       SELECT t.*, u.phone, u.full_name 
       FROM transactions t 
       JOIN users u ON t.user_id = u.id 
-      WHERE t.type = 'topup' OR t.type = 'lucky_order_topup'
+      WHERE t.type IN ('topup', 'lucky_order_topup')
       ORDER BY t.created_at DESC
     `);
     res.status(200).json({ requests });
   } catch (error) {
     console.error('Get Topup Requests Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
+// ⚠️ CRITICAL PRODUCTION FIX: Wrapped in Database Transaction to prevent partial updates
 exports.updateTopupRequest = async (req, res) => {
+  const connection = await pool.getConnection();
   try {
-    const { id } = req.params;
+    const transactionId = parseInt(req.params.id, 10);
     const { status, admin_note } = req.body;
     const adminId = getAdminId(req);
 
-    console.log("🔍 Updating transaction ID:", id, "with status:", status, "adminId:", adminId);
+    await connection.beginTransaction();
 
     // ၁။ Transaction အခြေအနေကို Update လုပ်မယ်
-    await pool.query(
+    await connection.query(
       'UPDATE transactions SET status = ?, admin_note = ?, approved_by = ?, updated_at = NOW() WHERE id = ?',
-      [status, admin_note || '', adminId, id]
+      [status, admin_note || '', adminId, transactionId]
     );
 
     // ၂။ Approved ဖြစ်ပါက User Balance ထဲသို့ ပိုက်ဆံအလိုအလျောက် ထည့်ပေးမယ်
     if (status === 'approved') {
-      const [transaction] = await pool.query(
+      const [transactions] = await connection.query(
         'SELECT user_id, amount FROM transactions WHERE id = ?', 
-        [id]
+        [transactionId]
       );
       
-      if (transaction.length > 0) {
-        const userId = transaction[0].user_id;
-        const topupAmount = parseFloat(transaction[0].amount || 0);
-        
-        console.log(`💰 Adding top-up amount ${topupAmount} to user ${userId} balance...`);
+      if (transactions.length > 0) {
+        const userId = transactions[0].user_id;
+        const topupAmount = parseFloat(transactions[0].amount || 0);
         
         // Top-up ပိုက်ဆံကို Balance ထဲထည့်မယ်
-        await pool.query(
+        await connection.query(
           'UPDATE users SET balance = balance + ? WHERE id = ?',
           [topupAmount, userId]
         );
 
         // ၃။ ✅ Lucky Order Auto-Complete Logic
-        // ဤ User တွင် Pending ဖြစ်နေသော Lucky Order ရှိမရှိ စစ်ဆေးမယ်
-        const [pendingLuckyOrders] = await pool.query(
+        const [pendingLuckyOrders] = await connection.query(
           'SELECT id, task_number, amount, commission FROM lucky_orders WHERE user_id = ? AND status = "pending" ORDER BY created_at ASC LIMIT 1',
           [userId]
         );
@@ -164,30 +153,28 @@ exports.updateTopupRequest = async (req, res) => {
         if (pendingLuckyOrders.length > 0) {
           const luckyOrder = pendingLuckyOrders[0];
           const commission = parseFloat(luckyOrder.commission || 0);
-          const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+          const today = new Date().toISOString().split('T')[0];
           const orderNo = `LUCKY-${Date.now()}`;
           
-          console.log(`✅ Lucky Order found! Task #${luckyOrder.task_number}, Commission: $${commission}`);
-          
-          // (က) Lucky Order Status ကို "completed" သို့ ပြောင်းမယ် (Order Page မှာ ပျောက်သွားစေရန်)
-          await pool.query(
+          // (က) Lucky Order Status ကို "completed" သို့ ပြောင်းမယ်
+          await connection.query(
             'UPDATE lucky_orders SET status = "completed", completed_at = NOW() WHERE id = ?',
             [luckyOrder.id]
           );
           
           // (ခ) Lucky Order Commission ကို User Balance ထဲ ထပ်ထည့်ပေးမယ်
-          await pool.query(
+          await connection.query(
             'UPDATE users SET balance = balance + ? WHERE id = ?',
             [commission, userId]
           );
           
-          // (ဂ) ✅ Today's Earnings ထဲမှာ ပါလာအောင် user_tasks table ထဲကို မှတ်တမ်းတင်မယ်
-          await pool.query(
+          // (ဂ) Today's Earnings ထဲမှာ ပါလာအောင် user_tasks table ထဲကို မှတ်တမ်းတင်မယ်
+          await connection.query(
             `INSERT INTO user_tasks (user_id, task_id, task_number, order_no, order_amount, commission, is_lucky_order, lucky_order_amount, status, date, completed_at) 
              VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'completed', ?, NOW())`,
             [
               userId, 
-              luckyOrder.task_number, // task_id နေရာတွင် task_number ကို အစားထိုးသုံးပါမည်
+              luckyOrder.task_number, 
               luckyOrder.task_number, 
               orderNo, 
               luckyOrder.amount, 
@@ -196,21 +183,19 @@ exports.updateTopupRequest = async (req, res) => {
               today
             ]
           );
-          
-          console.log(`🎉 Lucky Order auto-completed! Commission $${commission} added to balance and today's earnings.`);
         }
-
-        console.log("✅ Balance updated successfully for user:", userId);
-      } else {
-        console.log("❌ Transaction not found in database!");
       }
     }
 
+    await connection.commit();
     res.status(200).json({ message: `Request ${status} successfully` });
+
   } catch (error) {
+    await connection.rollback(); // Error တက်ရင် အကုန်ပြန် Cancel လုပ်မယ်
     console.error('❌ Update Topup Error:', error);
-    console.error('SQL Error:', error.sqlMessage);
-    res.status(500).json({ message: 'Server error: ' + error.message });
+    res.status(500).json({ message: 'Server error: ' + (error.sqlMessage || error.message) });
+  } finally {
+    connection.release(); // Connection ကို ပြန်လွှတ်ပေးမယ်
   }
 };
 
@@ -226,25 +211,25 @@ exports.getWithdrawRequests = async (req, res) => {
     res.status(200).json({ requests });
   } catch (error) {
     console.error('Get Withdraw Requests Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
 exports.updateWithdrawRequest = async (req, res) => {
   try {
-    const { id } = req.params;
+    const transactionId = parseInt(req.params.id, 10);
     const { status, admin_note } = req.body;
     const adminId = getAdminId(req);
 
     await pool.query(
       'UPDATE transactions SET status = ?, admin_note = ?, approved_by = ?, updated_at = NOW() WHERE id = ?',
-      [status, admin_note, adminId, id]
+      [status, admin_note, adminId, transactionId]
     );
 
     res.status(200).json({ message: `Request ${status} successfully` });
   } catch (error) {
     console.error('Update Withdraw Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -257,7 +242,7 @@ exports.getTasks = async (req, res) => {
     res.status(200).json({ tasks });
   } catch (error) {
     console.error('Get Tasks Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -266,12 +251,12 @@ exports.addTask = async (req, res) => {
     const { hotel_name, hotel_image, description, order_amount, commission } = req.body;
     const [result] = await pool.query(
       'INSERT INTO tasks (hotel_name, hotel_image, description, order_amount, commission) VALUES (?, ?, ?, ?, ?)',
-      [hotel_name, hotel_image, description, order_amount, commission]
+      [hotel_name, hotel_image, description, parseFloat(order_amount), parseFloat(commission)]
     );
     res.status(201).json({ message: 'Task added successfully', taskId: result.insertId });
   } catch (error) {
     console.error('Add Task Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -290,11 +275,10 @@ exports.getLuckyOrders = async (req, res) => {
     res.status(200).json({ orders });
   } catch (error) {
     console.error('Get Lucky Orders Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
-// ✅ FIXED: Admin က Lucky Order ထည့်တဲ့အခါ status ကို 'assigned' ထားရမယ်
 exports.addLuckyOrder = async (req, res) => {
   try {
     const { user_id, task_number, amount, commission } = req.body;
@@ -304,49 +288,32 @@ exports.addLuckyOrder = async (req, res) => {
       return res.status(400).json({ message: 'Please fill all required fields' });
     }
 
-    if (!adminId) {
-      return res.status(401).json({ message: 'Admin authentication failed' });
-    }
+    const [users] = await pool.query('SELECT id FROM users WHERE id = ?', [parseInt(user_id, 10)]);
+    if (users.length === 0) return res.status(404).json({ message: 'User not found' });
 
-    // ✅ User ID ဖြင့် User ကို ရှာပါ
-    const [users] = await pool.query('SELECT id, phone FROM users WHERE id = ?', [user_id]);
-    if (users.length === 0) {
-      return res.status(404).json({ message: `User not found with ID: ${user_id}` });
-    }
+    const [tasks] = await pool.query('SELECT id FROM tasks WHERE id = ?', [parseInt(task_number, 10)]);
+    if (tasks.length === 0) return res.status(404).json({ message: 'Task not found' });
 
-    // Task ရှိမရှိ စစ်ဆေးပါ
-    const [tasks] = await pool.query('SELECT id FROM tasks WHERE id = ?', [task_number]);
-    if (tasks.length === 0) {
-      return res.status(404).json({ message: 'Task not found' });
-    }
-
-    // ✅ lucky_orders table ထဲကို user_id ဖြင့် သိမ်းပါ (Status ကို 'assigned' ထားပါ)
     const [result] = await pool.query(
       'INSERT INTO lucky_orders (user_id, task_number, amount, commission, created_by, status) VALUES (?, ?, ?, ?, ?, ?)',
-      [user_id, task_number, amount, commission, adminId, 'assigned'] // <-- 'pending' အစား 'assigned'
+      [parseInt(user_id, 10), parseInt(task_number, 10), parseFloat(amount), parseFloat(commission), adminId, 'pending']
     );
     
-    res.status(201).json({ 
-      message: 'Lucky order added successfully', 
-      orderId: result.insertId 
-    });
+    res.status(201).json({ message: 'Lucky order added successfully', orderId: result.insertId });
   } catch (error) {
     console.error('Add Lucky Order Error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
 exports.cancelLuckyOrder = async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query(
-      'UPDATE lucky_orders SET status = ? WHERE id = ?',
-      ['cancelled', id]
-    );
+    const orderId = parseInt(req.params.id, 10);
+    await pool.query('UPDATE lucky_orders SET status = ? WHERE id = ?', ['cancelled', orderId]);
     res.status(200).json({ message: 'Lucky order cancelled successfully' });
   } catch (error) {
     console.error('Cancel Lucky Order Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -359,7 +326,7 @@ exports.getInviteCodes = async (req, res) => {
     res.status(200).json({ codes });
   } catch (error) {
     console.error('Get Invite Codes Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -368,18 +335,23 @@ exports.createInviteCode = async (req, res) => {
     const { code, max_uses } = req.body;
     const adminId = getAdminId(req);
 
-    if (!adminId) {
-      return res.status(401).json({ message: 'Admin authentication failed' });
-    }
+    if (!adminId) return res.status(401).json({ message: 'Admin authentication failed' });
+    if (!code) return res.status(400).json({ message: 'Invite code is required' });
+
+    const safeMaxUses = parseInt(max_uses, 10) || 10; // Default to 10 if not provided
 
     const [result] = await pool.query(
       'INSERT INTO invite_codes (code, created_by, max_uses) VALUES (?, ?, ?)',
-      [code, adminId, max_uses]
+      [code, adminId, safeMaxUses]
     );
     res.status(201).json({ message: 'Invite code created successfully', codeId: result.insertId });
   } catch (error) {
     console.error('Create Invite Code Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    // Duplicate entry error handling
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ message: 'This invite code already exists' });
+    }
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -394,7 +366,7 @@ exports.getSettings = async (req, res) => {
     res.status(200).json({ settings: settingsObj });
   } catch (error) {
     console.error('Get Settings Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };
 
@@ -410,6 +382,6 @@ exports.updateSettings = async (req, res) => {
     res.status(200).json({ message: 'Settings updated successfully' });
   } catch (error) {
     console.error('Update Settings Error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage });
   }
 };

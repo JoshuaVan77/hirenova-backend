@@ -1,11 +1,12 @@
 const { pool } = require('./database');
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 async function initDatabase() {
   try {
     console.log('🔄 Starting database initialization...');
 
-    // Foreign Key Check ကို ယာယီပိတ်ထားခြင်း (Table အစီအစဉ် မှားယွင်းမှု မရှိစေရန်)
+    // 1. Foreign Key Check ကို ယာယီပိတ်ထားခြင်း (Table အစီအစဉ် မှားယွင်းမှု မရှိစေရန်)
     await pool.query('SET FOREIGN_KEY_CHECKS = 0');
 
     const tables = [
@@ -135,29 +136,33 @@ async function initDatabase() {
       )`
     ];
 
-    // Table တစ်ခုချင်းစီကို ဖန်တီးခြင်း
+    // 2. Table တစ်ခုချင်းစီကို ဖန်တီးခြင်း
     for (const tableQuery of tables) {
       await pool.query(tableQuery);
     }
 
-    // Foreign Key Check ကို ပြန်ဖွင့်ခြင်း
+    // 3. Foreign Key Check ကို ပြန်ဖွင့်ခြင်း
     await pool.query('SET FOREIGN_KEY_CHECKS = 1');
 
-    // Default Settings ထည့်သွင်းခြင်း
+    // 4. Default Settings ထည့်သွင်းခြင်း (INSERT IGNORE ကြောင့် ထပ်ထည့်မိမှာ မဟုတ်ပါ)
     await pool.query(`INSERT IGNORE INTO settings (setting_key, setting_value, description) VALUES 
       ('min_task_balance', '30', 'Minimum balance required to start tasks'),
       ('min_topup_amount', '10', 'Minimum top-up amount in USDT')
     `);
 
-    // Default Admin ထည့်သွင်းခြင်း (စမ်းသပ်ရန်)
-    const bcrypt = require('bcrypt');
-    const hashedPassword = await bcrypt.hash('admin123', 10);
+    // 5. Default Admin ထည့်သွင်းခြင်း
+    // ⚠️ SECURITY WARNING: Live ဖြစ်သွားရင် ဒီ Password ကို ချက်ချင်းပြောင်းပါ!
+    const defaultAdminPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+    const hashedPassword = await bcrypt.hash(defaultAdminPassword, 10);
+    
     await pool.query(`INSERT IGNORE INTO admins (username, password, email, role) VALUES 
       ('admin', '${hashedPassword}', 'admin@hirenova.com', 'super_admin')
     `);
 
     console.log('✅ Database tables initialized successfully!');
-    console.log('👤 Default Admin created: username: admin, password: admin123');
+    console.log(`👤 Default Admin ready: username: admin, password: ${defaultAdminPassword}`);
+    console.log('⚠️  NOTE: Please change the default admin password immediately after first login!');
+    
     process.exit(0); // Script ကို အောင်မြင်စွာ ပြီးဆုံးစေခြင်း
 
   } catch (error) {
@@ -166,4 +171,9 @@ async function initDatabase() {
   }
 }
 
-initDatabase();
+// ဤ Script ကို တိုက်ရိုက် Run မှသာ အလုပ်လုပ်စေရန် (Server Start တိုင်း မ run စေရန်)
+if (require.main === module) {
+  initDatabase();
+}
+
+module.exports = { initDatabase };
