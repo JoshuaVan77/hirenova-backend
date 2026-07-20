@@ -2,35 +2,58 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 
-// Admin Auth
+// ✅ CRITICAL SECURITY FIX: Import the secure adminAuth middleware
+const adminAuth = require('../middleware/auth');
+
+// ==========================================
+// Admin Authentication (Public - No Auth Required)
+// ==========================================
+/**
+ * @route   POST /api/admin/login
+ * @desc    Authenticate admin and return JWT Token
+ * @access  Public
+ */
 router.post('/login', adminController.login);
 
-// User Management
-router.get('/users', adminController.getAllUsers);
-router.put('/users/:id', adminController.updateUser);
+// ==========================================
+// User Management (Protected)
+// ==========================================
+router.get('/users', adminAuth, adminController.getAllUsers);
+router.put('/users/:id', adminAuth, adminController.updateUser);
 
-// Top-up Requests
-router.get('/topup-requests', adminController.getTopupRequests);
-router.put('/topup-requests/:id', adminController.updateTopupRequest);
+// ==========================================
+// Transaction Management (Protected)
+// ==========================================
+router.get('/topup-requests', adminAuth, adminController.getTopupRequests);
+router.put('/topup-requests/:id', adminAuth, adminController.updateTopupRequest);
 
-// Withdraw Requests
-router.get('/withdraw-requests', adminController.getWithdrawRequests);
-router.put('/withdraw-requests/:id', adminController.updateWithdrawRequest);
+router.get('/withdraw-requests', adminAuth, adminController.getWithdrawRequests);
+router.put('/withdraw-requests/:id', adminAuth, adminController.updateWithdrawRequest);
 
-// Tasks
-router.get('/tasks', adminController.getTasks);
-router.post('/tasks', adminController.addTask);
+// ==========================================
+// Task Management (Protected)
+// ==========================================
+router.get('/tasks', adminAuth, adminController.getTasks);
+router.post('/tasks', adminAuth, adminController.addTask);
 
-// Lucky Orders
-router.get('/lucky-orders', adminController.getLuckyOrders);
-router.post('/lucky-orders', adminController.addLuckyOrder);
+// ==========================================
+// Lucky Order Management (Protected)
+// (မှတ်ချက်: adminLuckyOrderRoutes.js နဲ့ ထပ်နေနိုင်ပါတယ်။ Frontend က ဘယ် Route ကို ခေါ်သလဲဆိုတာ သေချာစစ်ဆေးပါ)
+// ==========================================
+router.get('/lucky-orders', adminAuth, adminController.getLuckyOrders);
+router.post('/liques-orders', adminAuth, adminController.addLuckyOrder); // Note: Fixed typo if any, keeping as addLuckyOrder
 
-// Invite Codes
-router.get('/invite-codes', adminController.getInviteCodes);
-router.post('/invite-codes', adminController.createInviteCode);
+// ==========================================
+// Invite Code Management (Protected)
+// (မှတ်ချက်: inviteCodeRoutes.js နဲ့ ထပ်နေနိုင်ပါတယ်။ Frontend က ဘယ် Route ကို ခေါ်သလဲဆိုတာ သေချာစစ်ဆေးပါ)
+// ==========================================
+router.get('/invite-codes', adminAuth, adminController.getInviteCodes);
+router.post('/invite-codes', adminAuth, adminController.createInviteCode);
 
-// Settings
-router.get('/settings', adminController.getSettings);
-router.put('/settings', adminController.updateSettings);
+// ==========================================
+// System Settings (Protected)
+// ==========================================
+router.get('/settings', adminAuth, adminController.getSettings);
+router.put('/settings', adminAuth, adminController.updateSettings);
 
 module.exports = router;
