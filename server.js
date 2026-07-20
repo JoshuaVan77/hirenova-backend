@@ -16,8 +16,8 @@ const io = initSocket(server);
 // Middleware
 // ==========================================
 
-// ✅ FIXED: Allow multiple origins (Localhost + Both Vercel Deployments)
-// Railway .env မှာ FRONTEND_URL=https://hirenova-user.vercel.app,https://hirenova-admin.vercel.app လို့ ထားနိုင်အောင် ပြင်ဆင်ထားသည်
+// ✅ Production-Ready CORS Configuration
+// Railway .env မှ FRONTEND_URL ကို comma (,) ခြားပြီး ထည့်ထားပါက အလိုအလျောက် ဖတ်ယူပါမည်
 const envOrigins = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : [];
 
 const allowedOrigins = [
@@ -33,7 +33,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, or Railway internal DB)
+    // Allow requests with no origin (like mobile apps, Postman, or Railway internal health checks)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) === -1) {
@@ -45,31 +45,27 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
 }));
 
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
-app.use('/uploads', express.static('uploads')); // Serve static files
+app.use(express.json({ limit: '10mb' })); // Parse JSON bodies (limit increased for image uploads)
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse URL-encoded bodies
 
-// ==========================================
-// Security: Rate Limiting (COMPLETELY REMOVED AS REQUESTED)
-// ==========================================
-// Rate limiting has been completely disabled for both Admin and User routes 
-// to prevent any 429 Too Many Requests errors during development/testing.
+// Serve static files for uploads (ensure 'uploads' folder exists in root)
+app.use('/uploads', express.static('uploads')); 
 
 // ==========================================
 // API Routes
 // ⚠️ CRITICAL: Specific routes MUST come BEFORE generic routes!
 // ==========================================
 
-// 1. Admin Routes (No Rate Limiting)
+// 1. Admin Routes
 app.use('/api/admin/lucky-orders', require('./routes/adminLuckyOrderRoutes'));
 app.use('/api/admin/tasks', require('./routes/adminTaskRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 
-// 2. User Routes (No Rate Limiting - COMPLETELY REMOVED)
+// 2. User Routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/user/tasks', require('./routes/userTaskRoutes'));
@@ -107,11 +103,11 @@ app.use((err, req, res, next) => {
   console.error('Method:', req.method);
   console.error('Error Name:', err.name);
   console.error('Error Message:', err.message);
-  // console.error('Stack:', err.stack); // Uncomment this line if you need deep debugging
   
+  // Production မှာ Error Detail ကို User ဆီ မပြမိအောင် ကာကွယ်ထားသည်
   res.status(err.status || 500).json({ 
     message: 'Internal Server Error', 
-    details: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    details: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong on the server'
   });
 });
 
@@ -121,7 +117,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
   await testConnection();
 });
 
