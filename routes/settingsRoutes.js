@@ -2,10 +2,21 @@ const express = require('express');
 const router = express.Router();
 const settingsController = require('../controllers/settingsController');
 
-// Public Route (User Website အတွက် Token မလိုအပ်ပါ)
+// ✅ CRITICAL SECURITY FIX: Import the secure adminAuth middleware
+const adminAuth = require('../middleware/auth');
+
+/**
+ * @route   GET /api/settings
+ * @desc    Get all system settings (Required for User Website to check min_task_balance, etc.)
+ * @access  Public
+ */
 router.get('/', settingsController.getSettings);
 
-// Admin Route (Token လိုအပ်ပါမယ် - လောလောဆယ် Admin ကနေပဲ Update လုပ်မယ်)
-router.put('/', settingsController.updateSettings);
+/**
+ * @route   PUT /api/settings
+ * @desc    Update system settings (Admin only)
+ * @access  Private (Admin)
+ */
+router.put('/', adminAuth, settingsController.updateSettings);
 
 module.exports = router;
