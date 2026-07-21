@@ -2,11 +2,10 @@ const express = require('express');
 const router = express.Router();
 
 // ✅ Import centralized secure admin authentication middleware
-// (Token စစ်ဆေးတာ၊ Role စစ်ဆေးတာတွေကို ဒီတစ်နေရာတည်းမှာပဲ စီမံခန့်ခွဲထားပါတယ်)
 const adminAuth = require('../middleware/auth');
 
 // ✅ Import controller containing Lucky Order logic
-const adminController = require('../controllers/adminController');
+const adminController = require('../controllers/adminLuckyOrderController'); // ဖိုင်နာမည် မှန်ကန်ကြောင်း သေချာပါစေ
 
 /**
  * @route   GET /api/admin/lucky-orders
@@ -20,7 +19,8 @@ router.get('/', adminAuth, adminController.getLuckyOrders);
  * @desc    Create a new lucky order
  * @access  Private (Admin)
  */
-router.post('/', adminAuth, adminController.addLuckyOrder);
+// ✅ FIX: 'addLuckyOrder' အစား Controller ထဲက နာမည်အတိုင်း 'createLuckyOrder' ကို ပြောင်းပါ
+router.post('/', adminAuth, adminController.createLuckyOrder);
 
 /**
  * @route   PUT /api/admin/lucky-orders/:id/cancel

@@ -27,15 +27,17 @@ exports.getLuckyOrders = async (req, res) => {
 // ==========================================
 exports.createLuckyOrder = async (req, res) => {
   try {
-    const { user_phone, task_number, amount, commission } = req.body;
+    // ✅ FIX 1: Frontend က 'phone' လို့ပို့တာမို့ 'phone' ကို ယူသုံးပါမယ်
+    const { phone, task_number, amount, commission } = req.body;
     const adminId = req.adminId || req.user?.adminId;
 
     if (!adminId) {
       return res.status(401).json({ message: 'Admin authentication failed' });
     }
 
-    if (!user_phone || !task_number || amount === undefined || commission === undefined) {
-      return res.status(400).json({ message: 'All fields (user_phone, task_number, amount, commission) are required' });
+    // ✅ FIX 2: Validation မှာလည်း 'phone' ကို စစ်ဆေးပါမယ်
+    if (!phone || !task_number || amount === undefined || commission === undefined) {
+      return res.status(400).json({ message: 'All fields (phone, task_number, amount, commission) are required' });
     }
 
     // Strict Validation
@@ -55,15 +57,15 @@ exports.createLuckyOrder = async (req, res) => {
       return res.status(400).json({ message: 'Commission must be a valid positive number' });
     }
 
-    // Find user by phone (trimmed)
-    const [users] = await pool.query('SELECT id, phone FROM users WHERE phone = ?', [user_phone.trim()]);
+    // ✅ FIX 3: Database query မှာလည်း 'phone' variable ကို သုံးပါမယ်
+    const [users] = await pool.query('SELECT id, phone FROM users WHERE phone = ?', [phone.trim()]);
     if (users.length === 0) {
       return res.status(404).json({ message: 'User not found with this phone number' });
     }
 
     const userId = users[0].id;
 
-    // Check if lucky order already exists for this user and task number (assigned or pending)
+    // Check if lucky order already exists for this user and task number
     const [existing] = await pool.query(
       'SELECT id FROM lucky_orders WHERE user_id = ? AND task_number = ? AND status IN ("assigned", "pending")',
       [userId, parsedTaskNumber]
@@ -73,7 +75,7 @@ exports.createLuckyOrder = async (req, res) => {
       return res.status(400).json({ message: 'A lucky order already exists for this user at this task number' });
     }
 
-    // Insert with status 'assigned' (User needs to acknowledge it before balance is deducted)
+    // Insert with status 'assigned'
     await pool.query(
       'INSERT INTO lucky_orders (user_id, task_number, amount, commission, created_by, status) VALUES (?, ?, ?, ?, ?, "assigned")',
       [userId, parsedTaskNumber, parsedAmount, parsedCommission, adminId]
