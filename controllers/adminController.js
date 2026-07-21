@@ -4,11 +4,11 @@ const jwt = require('jsonwebtoken');
 
 // Helper function to get Admin ID safely from request
 const getAdminId = (req) => {
-  return req.user?.adminId || req.admin?.adminId || req.adminId || null;
+  return req.user?.adminId || req.admin?.adminId || req.adminId || req.user?.id || req.admin?.id || null;
 };
 
 // ==========================================
-// Admin Authentication
+// Admin Authentication & Profile Management
 // ==========================================
 exports.login = async (req, res) => {
   try {
@@ -41,6 +41,135 @@ exports.login = async (req, res) => {
   } catch (error) {
     console.error('Admin Login Error:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ✅ Change Admin Password
+exports.changeAdminPassword = async (req, res) => {
+  try {
+    const adminId = getAdminId(req);
+    const { currentPassword, newPassword } = req.body;
+
+    if (!adminId) {
+      return res.status(401).json({ message: 'Admin authentication failed' });
+    }
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Please provide both current and new password' });
+    }
+
+    // 1. Fetch admin details
+    const [admins] = await pool.query('SELECT * FROM admins WHERE id = ?', [adminId]);
+    if (admins.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const admin = admins[0];
+
+    // 2. Verify current password
+    const isPasswordValid = await bcrypt.compare(currentPassword, admin.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    // 3. Hash new password & update
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    await pool.query('UPDATE admins SET password = ? WHERE id = ?', [hashedPassword, adminId]);
+
+    res.status(200).json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Change Admin Password Error:', error);
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage || error.message });
+  }
+};
+
+// ✅ Update Admin Username
+exports.updateAdminUsername = async (req, res) => {
+  try {
+    const adminId = getAdminId(req);
+    const { newUsername } = req.body;
+
+    if (!adminId) {
+      return res.status(401).json({ message: 'Admin authentication failed' });
+    }
+
+    if (!newUsername || !newUsername.trim()) {
+      return res.status(400).json({ message: 'Username is required' });
+    }
+
+    // Check if new username is already taken by another admin
+    const [existing] = await pool.query('SELECT id FROM admins WHERE username = ? AND id != ?', [newUsername.trim(), adminId]);
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'Username is already taken' });
+    }
+
+    await pool.query('UPDATE admins SET username = ? WHERE id = ?', [newUsername.trim(), adminId]);
+
+    res.status(200).json({ message: 'Username updated successfully', username: newUsername.trim() });
+  } catch (error) {
+    console.error('Update Admin Username Error:', error);
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage || error.message });
+  }
+};
+
+// ✅ Combined Profile Update (Username & Optional Password)
+exports.updateAdminProfile = async (req, res) => {
+  try {
+    const adminId = getAdminId(req);
+    const { username, currentPassword, newPassword } = req.body;
+
+    if (!adminId) {
+      return res.status(401).json({ message: 'Admin authentication failed' });
+    }
+
+    const [admins] = await pool.query('SELECT * FROM admins WHERE id = ?', [adminId]);
+    if (admins.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const admin = admins[0];
+    let updatedFields = [];
+    let queryParams = [];
+
+    // Update Username if provided and different
+    if (username && username.trim() !== admin.username) {
+      const [existing] = await pool.query('SELECT id FROM admins WHERE username = ? AND id != ?', [username.trim(), adminId]);
+      if (existing.length > 0) {
+        return res.status(400).json({ message: 'Username is already taken' });
+      }
+      updatedFields.push('username = ?');
+      queryParams.push(username.trim());
+    }
+
+    // Update Password if provided
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: 'Current password is required to set a new password' });
+      }
+
+      const isPasswordValid = await bcrypt.compare(currentPassword, admin.password);
+      if (!isPasswordValid) {
+        return res.status(400).json({ message: 'Current password is incorrect' });
+      }
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      updatedFields.push('password = ?');
+      queryParams.push(hashedPassword);
+    }
+
+    if (updatedFields.length === 0) {
+      return res.status(400).json({ message: 'No changes provided' });
+    }
+
+    queryParams.push(adminId);
+    await pool.query(`UPDATE admins SET ${updatedFields.join(', ')} WHERE id = ?`, queryParams);
+
+    res.status(200).json({ message: 'Admin profile updated successfully' });
+  } catch (error) {
+    console.error('Update Admin Profile Error:', error);
+    res.status(500).json({ message: 'Server error', error: error.sqlMessage || error.message });
   }
 };
 
@@ -338,7 +467,7 @@ exports.createInviteCode = async (req, res) => {
     if (!adminId) return res.status(401).json({ message: 'Admin authentication failed' });
     if (!code) return res.status(400).json({ message: 'Invite code is required' });
 
-    const safeMaxUses = parseInt(max_uses, 10) || 10; // Default to 10 if not provided
+    const safeMaxUses = parseInt(max_uses, 10) || 10;
 
     const [result] = await pool.query(
       'INSERT INTO invite_codes (code, created_by, max_uses) VALUES (?, ?, ?)',
@@ -347,7 +476,6 @@ exports.createInviteCode = async (req, res) => {
     res.status(201).json({ message: 'Invite code created successfully', codeId: result.insertId });
   } catch (error) {
     console.error('Create Invite Code Error:', error);
-    // Duplicate entry error handling
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(400).json({ message: 'This invite code already exists' });
     }

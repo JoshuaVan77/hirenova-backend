@@ -16,6 +16,30 @@ const adminAuth = require('../middleware/auth');
 router.post('/login', adminController.login);
 
 // ==========================================
+// Admin Profile & Credentials Management (Protected)
+// ==========================================
+/**
+ * @route   PUT /api/admin/change-password
+ * @desc    Change Admin Password
+ * @access  Private (Admin)
+ */
+router.put('/change-password', adminAuth, adminController.changeAdminPassword);
+
+/**
+ * @route   PUT /api/admin/update-username
+ * @desc    Update Admin Username
+ * @access  Private (Admin)
+ */
+router.put('/update-username', adminAuth, adminController.updateAdminUsername);
+
+/**
+ * @route   PUT /api/admin/update-profile
+ * @desc    Update Admin Profile (Username & Password together)
+ * @access  Private (Admin)
+ */
+router.put('/update-profile', adminAuth, adminController.updateAdminProfile);
+
+// ==========================================
 // User Management (Protected)
 // ==========================================
 router.get('/users', adminAuth, adminController.getAllUsers);
@@ -38,14 +62,13 @@ router.post('/tasks', adminAuth, adminController.addTask);
 
 // ==========================================
 // Lucky Order Management (Protected)
-// (မှတ်ချက်: adminLuckyOrderRoutes.js နဲ့ ထပ်နေနိုင်ပါတယ်။ Frontend က ဘယ် Route ကို ခေါ်သလဲဆိုတာ သေချာစစ်ဆေးပါ)
 // ==========================================
 router.get('/lucky-orders', adminAuth, adminController.getLuckyOrders);
-router.post('/liques-orders', adminAuth, adminController.addLuckyOrder); // Note: Fixed typo if any, keeping as addLuckyOrder
+router.post('/lucky-orders', adminAuth, adminController.addLuckyOrder);
+router.put('/lucky-orders/:id/cancel', adminAuth, adminController.cancelLuckyOrder);
 
 // ==========================================
 // Invite Code Management (Protected)
-// (မှတ်ချက်: inviteCodeRoutes.js နဲ့ ထပ်နေနိုင်ပါတယ်။ Frontend က ဘယ် Route ကို ခေါ်သလဲဆိုတာ သေချာစစ်ဆေးပါ)
 // ==========================================
 router.get('/invite-codes', adminAuth, adminController.getInviteCodes);
 router.post('/invite-codes', adminAuth, adminController.createInviteCode);
