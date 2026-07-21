@@ -9,14 +9,10 @@ const { initSocket } = require('./socket');
 const app = express();
 const server = http.createServer(app);
 
-// ✅ Socket.io initialization
-const io = initSocket(server);
-
 // ==========================================
-// 1. Middleware
+// 1. Middleware & CORS Configuration
 // ==========================================
 
-// Production-Ready CORS Configuration
 const envOrigins = process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',') : [];
 const allowedOrigins = [
   'http://localhost:3000',
@@ -32,7 +28,6 @@ const allowedOrigins = [
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true); // Allow Postman, mobile apps, etc.
-    
     if (allowedOrigins.indexOf(origin) === -1) {
       console.warn(`⚠️ CORS Blocked: ${origin}`);
       return callback(new Error('CORS policy does not allow access'), false);
@@ -51,11 +46,16 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static('uploads'));
 
 // ==========================================
-// 2. API Routes (Order Matters!)
-// ⚠️ Specific routes MUST come BEFORE generic routes!
+// 2. Socket.io Initialization
+// ==========================================
+// ✅ initSocket ထဲတွင် CORS နှင့် Ping settings များကို ပေါင်းစပ်ထားသည်
+const io = initSocket(server, allowedOrigins);
+
+// ==========================================
+// 3. API Routes
 // ==========================================
 
-// A. Specific Admin Routes (Must be first)
+// A. Specific Admin Routes
 app.use('/api/admin/lucky-orders', require('./routes/adminLuckyOrderRoutes'));
 app.use('/api/admin/tasks', require('./routes/adminTaskRoutes'));
 
@@ -68,8 +68,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/user', require('./routes/userRoutes'));
 app.use('/api/user/tasks', require('./routes/userTaskRoutes'));
 
-// D. Shared / Other Routes (Chat, Settings, Invite Codes)
-// ✅ Added console logs to verify these are loading correctly
+// D. Shared / Other Routes
 console.log('📌 Loading chatRoutes...');
 app.use('/api/chat', require('./routes/chatRoutes'));
 
@@ -80,28 +79,7 @@ console.log('📌 Loading inviteCodeRoutes...');
 app.use('/api/invite-codes', require('./routes/inviteCodeRoutes'));
 
 // ==========================================
-// 3. Socket.IO Connection (Live Chat)
-// ==========================================
-io.on('connection', (socket) => {
-  console.log('🔌 New client connected:', socket.id);
-  
-  socket.on('join_user_room', (userId) => {
-    socket.join(`user_${userId}`);
-    console.log(`👤 User ${userId} joined their room`);
-  });
-  
-  socket.on('join_admin_room', () => {
-    socket.join('admin_room');
-    console.log('🛡️ Admin joined admin room');
-  });
-  
-  socket.on('disconnect', () => {
-    console.log('❌ Client disconnected:', socket.id);
-  });
-});
-
-// ==========================================
-// 4. GLOBAL ERROR HANDLER (Must be at the very bottom)
+// 4. GLOBAL ERROR HANDLER
 // ==========================================
 app.use((err, req, res, next) => {
   console.error('💥💥💥 GLOBAL ERROR CAUGHT 💥💥💥');
@@ -130,5 +108,4 @@ server.listen(PORT, async () => {
   await testConnection();
 });
 
-// Export for testing or graceful shutdown
 module.exports = { app, io, server };
