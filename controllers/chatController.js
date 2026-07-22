@@ -15,10 +15,15 @@ const getOrCreateConversation = async (userId, adminId = null) => {
 
   // 2. If not, create a new conversation
   const [result] = await pool.query(
-    'INSERT INTO conversations (user_id, admin_id, status) VALUES (?, ?, "active")',
+    'INSERT INTO conversations (user_id, admin_id, status, updated_at) VALUES (?, ?, "active", NOW())',
     [userId, adminId]
   );
   return result.insertId;
+};
+
+// Helper: Update Conversation Timestamp
+const updateConversationTimestamp = async (conversationId) => {
+  await pool.query('UPDATE conversations SET updated_at = NOW() WHERE id = ?', [conversationId]);
 };
 
 // ==========================================
@@ -31,9 +36,16 @@ exports.getUserMessages = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
-    // ✅ image_url ကို SELECT ထဲတွင် ထည့်သွင်းထားပါသည်
     const [messages] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at 
+      `SELECT 
+         m.id, 
+         m.sender_type, 
+         m.sender_id, 
+         m.message_type, 
+         m.content, 
+         COALESCE(m.image_url, NULL) as image_url, 
+         m.is_read, 
+         m.created_at 
        FROM messages m 
        WHERE m.conversation_id = ? 
        ORDER BY m.created_at ASC`,
@@ -71,14 +83,17 @@ exports.sendMessage = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
-    // ✅ INSERT ထဲတွင် image_url ကို ထည့်သွင်းသိမ်းဆည်းပါသည်
+    // 1. Insert message
     const [result] = await pool.query(
       `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, image_url, is_read) 
        VALUES (?, 'user', ?, ?, ?, ?, 0)`,
       [conversationId, userId, messageType, message || '', image_url]
     );
 
-    // ✅ SELECT ထဲတွင် image_url ပါဝင်အောင် ထုတ်ယူပါသည်
+    // 2. Update Conversation timestamp
+    await updateConversationTimestamp(conversationId);
+
+    // 3. Get created message details
     const [newMessage] = await pool.query(
       `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at, c.user_id 
        FROM messages m 
@@ -87,13 +102,15 @@ exports.sendMessage = async (req, res) => {
       [result.insertId]
     );
 
-    // Emit to Admin Room via Socket.io
+    // 4. Emit to Admin Room via Socket.io
     const io = getIo();
-    io.to('admin_room').emit('new_message', {
-      userId: userId,
-      conversationId: conversationId,
-      message: newMessage[0]
-    });
+    if (io) {
+      io.to('admin_room').emit('new_message', {
+        userId: userId,
+        conversationId: conversationId,
+        message: newMessage[0]
+      });
+    }
 
     res.status(201).json({ message: 'Message sent successfully', data: newMessage[0] });
   } catch (error) {
@@ -142,9 +159,16 @@ exports.getUserChatMessages = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
-    // ✅ image_url ပါဝင်အောင် SELECT လုပ်ပေးထားပါသည်
     const [messages] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at 
+      `SELECT 
+         m.id, 
+         m.sender_type, 
+         m.sender_id, 
+         m.message_type, 
+         m.content, 
+         COALESCE(m.image_url, NULL) as image_url, 
+         m.is_read, 
+         m.created_at 
        FROM messages m 
        WHERE m.conversation_id = ? 
        ORDER BY m.created_at ASC`,
@@ -173,12 +197,17 @@ exports.sendAdminReply = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId, adminId);
 
+    // 1. Insert admin message
     const [result] = await pool.query(
       `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, image_url, is_read) 
        VALUES (?, 'admin', ?, 'text', ?, NULL, 1)`,
       [conversationId, adminId, message]
     );
 
+    // 2. Update Conversation timestamp
+    await updateConversationTimestamp(conversationId);
+
+    // 3. Fetch full message info
     const [newMessage] = await pool.query(
       `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at, c.user_id 
        FROM messages m 
@@ -187,13 +216,15 @@ exports.sendAdminReply = async (req, res) => {
       [result.insertId]
     );
 
-    // Emit to specific User Room via Socket.io
+    // 4. Emit to specific User Room via Socket.io
     const io = getIo();
-    io.to(`user_${userId}`).emit('new_message', {
-      userId: userId,
-      conversationId: conversationId,
-      message: newMessage[0]
-    });
+    if (io) {
+      io.to(`user_${userId}`).emit('new_message', {
+        userId: userId,
+        conversationId: conversationId,
+        message: newMessage[0]
+      });
+    }
 
     res.status(201).json({ message: 'Reply sent successfully', data: newMessage[0] });
   } catch (error) {
