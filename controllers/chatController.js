@@ -31,8 +31,9 @@ exports.getUserMessages = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
+    // ✅ image_url ကို SELECT ထဲတွင် ထည့်သွင်းထားပါသည်
     const [messages] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.is_read, m.created_at 
+      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at 
        FROM messages m 
        WHERE m.conversation_id = ? 
        ORDER BY m.created_at ASC`,
@@ -70,14 +71,16 @@ exports.sendMessage = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
+    // ✅ INSERT ထဲတွင် image_url ကို ထည့်သွင်းသိမ်းဆည်းပါသည်
     const [result] = await pool.query(
-      `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, is_read) 
-       VALUES (?, 'user', ?, ?, ?, 0)`,
-      [conversationId, userId, messageType, message || ''] // If image, content can be empty or hold a caption
+      `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, image_url, is_read) 
+       VALUES (?, 'user', ?, ?, ?, ?, 0)`,
+      [conversationId, userId, messageType, message || '', image_url]
     );
 
+    // ✅ SELECT ထဲတွင် image_url ပါဝင်အောင် ထုတ်ယူပါသည်
     const [newMessage] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.is_read, m.created_at, c.user_id 
+      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at, c.user_id 
        FROM messages m 
        JOIN conversations c ON m.conversation_id = c.id 
        WHERE m.id = ?`,
@@ -100,7 +103,7 @@ exports.sendMessage = async (req, res) => {
 };
 
 // ==========================================
-// ၃။ Get All Conversations for Admin (with last message & unread count)
+// ၃။ Get All Conversations for Admin
 // ==========================================
 exports.getConversations = async (req, res) => {
   try {
@@ -112,7 +115,11 @@ exports.getConversations = async (req, res) => {
         u.full_name,
         c.status,
         c.updated_at as last_time,
-        (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
+        (SELECT CASE 
+                  WHEN message_type = 'image' THEN '📷 [Photo]' 
+                  ELSE content 
+                END 
+         FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id AND sender_type = 'user' AND is_read = 0) as unread_count
       FROM conversations c
       JOIN users u ON c.user_id = u.id
@@ -135,8 +142,9 @@ exports.getUserChatMessages = async (req, res) => {
 
     const conversationId = await getOrCreateConversation(userId);
 
+    // ✅ image_url ပါဝင်အောင် SELECT လုပ်ပေးထားပါသည်
     const [messages] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.is_read, m.created_at 
+      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at 
        FROM messages m 
        WHERE m.conversation_id = ? 
        ORDER BY m.created_at ASC`,
@@ -166,13 +174,13 @@ exports.sendAdminReply = async (req, res) => {
     const conversationId = await getOrCreateConversation(userId, adminId);
 
     const [result] = await pool.query(
-      `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, is_read) 
-       VALUES (?, 'admin', ?, 'text', ?, 1)`,
+      `INSERT INTO messages (conversation_id, sender_type, sender_id, message_type, content, image_url, is_read) 
+       VALUES (?, 'admin', ?, 'text', ?, NULL, 1)`,
       [conversationId, adminId, message]
     );
 
     const [newMessage] = await pool.query(
-      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.is_read, m.created_at, c.user_id 
+      `SELECT m.id, m.sender_type, m.sender_id, m.message_type, m.content, m.image_url, m.is_read, m.created_at, c.user_id 
        FROM messages m 
        JOIN conversations c ON m.conversation_id = c.id 
        WHERE m.id = ?`,
@@ -195,7 +203,7 @@ exports.sendAdminReply = async (req, res) => {
 };
 
 // ==========================================
-// ၆။ Mark Messages as Read (When Admin opens the chat)
+// ၆။ Mark Messages as Read
 // ==========================================
 exports.markMessagesAsRead = async (req, res) => {
   try {
